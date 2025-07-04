@@ -1,0 +1,725 @@
+The following are the initial codes given. It mainly purposed to clear existing objects,and create individual data.
+
+```{r}
+rm(list = ls()) 
+student_id <- 33521352
+set.seed(student_id) # Your Student ID is the random seed 
+WD = read.csv("WinnData.csv") 
+WD = WD[sample(nrow(WD), 5000, replace = FALSE),] 
+WD = WD[,c(sort(sample(1:30,20, replace = FALSE)), 31)] 
+options(warn = -1)
+```
+
+```{r}
+# The way of installing packages is adopted from https://stackoverflow.com/questions/4090169/elegant-way-to-check-for-missing-packages-and-install-them
+
+list.of.packages <- c("adabag", "rpart", "e1071", "tree", "ROCR", "smotefamily", "neuralnet", "lightgbm")
+new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
+if(length(new.packages)) install.packages(new.packages)
+
+library(dplyr)
+library(tree)
+library(ipred)
+library(rpart)
+library(e1071)
+library(neuralnet)
+library(ROCR)
+library(lightgbm)
+```
+
+**Question 1**
+
+Investigation of oats propotions:
+
+```{r}
+class_prop <- prop.table(table(WD$Class))
+```
+
+1.1 - Showing propotions
+
+```{r}
+cat("Proportion of Class 1:", class_prop[2] * 100 , "% \n")
+cat("Proportion of Class 0:", class_prop[1]* 100 , "% \n")
+```
+
+1.2 - Descriptive Stastistics
+
+```{r}
+# Since we want descriptions for all INDEPENDENT variables, this means we dont want Class column to be exist in our descriptive statistics. That is,
+# 1. We select those non-classes cases, AND THEN
+# 2. We do descriptive statistics from descr functions manually
+
+desc <- WD %>%
+  select(-Class) %>%
+  {
+    data.frame(
+      NA_Count = sapply(., function(x) sum(is.na(x))),
+      Mean     = sapply(., function(x) mean(x)),
+      Std_Dev  = sapply(., function(x) sd(x)),
+      Q1       = sapply(., function(x) as.numeric(quantile(x, 0.25))),
+      Median   = sapply(., function(x) median(x)),
+      Q3       = sapply(., function(x) as.numeric(quantile(x, 0.75))),
+      Max      = sapply(., function(x) max(x))
+    )
+  }
+
+
+# 3. AND THEN, make it dataframe so it's nice looking
+
+desc <- desc %>% 
+  round(2)%>%
+  t() %>% 
+  as.data.frame()
+
+
+desc
+```
+
+**Question 2**
+
+No any pre-processing since there exist **no** missing variables
+
+The double checking below is to ensure that `Class` is a factor
+
+```{r}
+WD$Class <- as.factor(WD$Class)  
+```
+
+**Question 3**
+
+As instructed by Information Sheet
+
+```{r}
+set.seed(student_id) 
+train.rows = sample(1:nrow(WD), 0.7*nrow(WD)) 
+data.train = WD[train.rows,] 
+data.test = WD[-train.rows,] 
+```
+
+```{r}
+is.factor(data.train$Class)
+levels(data.train$Class)  
+str(data.train$Class)
+```
+
+**Question 4**
+
+Decision Tree
+
+```{r}
+
+tree_model <- tree(Class ~ ., data = data.train)
+
+```
+
+Naïve Bayes
+
+```{r}
+
+nb_model <- naiveBayes(Class ~ ., data = data.train)
+
+```
+
+Bagging
+
+```{r}
+bag_model <- bagging(Class ~ ., data = data.train)
+```
+
+Boosting - AdaBoost
+
+```{r}
+library(adabag)
+boost_model <- boosting(Class ~ ., data = data.train)
+
+```
+
+Random Forest
+
+```{r}
+library(randomForest)
+
+rf_model <- randomForest(Class ~ ., data = data.train)
+```
+
+**Question 5, 6, 7, 8, 9**
+
+```{r}
+library(scales)
+metrices <- function(pred, prob, data.train, data.test) {
+    ### This is a function that evaluate all necessary metrics including
+    ### Accuracy, Precision, Recall, F1_Score
+    ### The calculation is mainly based on what was taught on Week 6
+    ### But the calculation is basd on confusion matrix since it's asked.
+    ### Return:
+    ### Whole bunch of list that are contains of required information
+    
+    Confusion_Matrix = table(Predicted = pred, Actual = data.test$Class)
+    
+    Accuracy = sum(diag(Confusion_Matrix)) / sum(Confusion_Matrix)
+    Precision = Confusion_Matrix[2,2] / sum(Confusion_Matrix[2,])
+    Recall = Confusion_Matrix[2,2] / sum(Confusion_Matrix[,2])
+    F1_Score = 2 * (Precision * Recall) / (Precision + Recall)
+    
+    pred_obj = ROCR::prediction(prob[,2], data.test$Class)
+    perf = performance(pred_obj, "tpr", "fpr")
+    auc = as.numeric(performance(pred_obj, "auc")@y.values)
+    
+    return(list(Confusion_Matrix = Confusion_Matrix, 
+                Accuracy = Accuracy, 
+                Precision = Precision, 
+                Recall = Recall, 
+                F1_Score = F1_Score,
+                pred_obj = pred_obj,
+                perf = perf,
+                auc = auc
+                ))
+}
+
+evaluate_model <- function(model, data.train, data.test) {
+    ### This is a function that evaluate all necessary metrics including
+    ### Accuracy, Precision, Recall, F1_Score of
+    ### The calculation is mainly based on what was taught on Week 6
+    ### The calculation would be based on the 'metrices' function
+    ### Return:
+    ### Model with information evaluated
+  
+  model_prob <- model$prob
+  model_info <- metrices(pred = model_pred, prob = model_prob, data.train = data.train, data.test = data.test)
+  
+  model <- append(model, model_info)
+  
+  return(model)
+}
+
+```
+
+```{r}
+model_entry <- function(model, pred, prob, name) {
+    ### This is a function that make a model entry (global entry) into whole bunch of models
+    ### It regiters all the necessary information
+    ### Model with information to be appended into the 'whole_bunch_of_models'
+  
+  # colour
+  model_entry <- function(model, pred, prob, name) {
+      ### This is a function that make a model entry (global entry) into whole bunch of models
+      ### It regiters all the necessary information
+      ### Model with information to be appended into the 'whole_bunch_of_models'
+    new_entry <- list(
+      model = model,
+      pred = pred,
+      prob = prob,
+      name = name,
+      colour = hue_pal()(length(whole_bunch_of_models) + 1)[length(whole_bunch_of_models) + 1]
+    )
+    entry <- evaluate_model(
+      model = new_entry,
+      data.train = data.train,
+      data.test = data.test
+    )
+    
+    whole_bunch_of_models <<- append(whole_bunch_of_models, list(entry))
+}}
+
+
+### These are whole bunch of list of models
+### I'm making it list so that it's extendable
+### And cz every model have dofferent type of method to call predict
+whole_bunch_of_models <- list()
+
+model_entry(model = tree_model, 
+       pred = predict(tree_model, data.test, type = "class"),
+       prob = predict(tree_model, data.test, type = "vector"),
+       name = "Decision Tree")
+  
+model_entry(model = nb_model,
+       pred = predict(nb_model, data.test),
+       prob = predict(nb_model, data.test, type = "raw"),
+       name = "Naive Bayes")
+  
+model_entry(model = bag_model, 
+       pred = predict(bag_model, data.test, type= "class"),
+       prob = predict(bag_model, data.test, type= "prob"),
+       name = "Bagging")
+  
+model_entry(model = boost_model,
+       pred = predict(boost_model, data.test)$class,
+       prob = predict(boost_model, data.test)$prob,
+       name = "Boosting")
+  
+model_entry(model = rf_model, 
+       pred = predict(rf_model, data.test),
+       prob = predict(rf_model, data.test, type = "prob"),
+       name = "Random Forest")
+```
+
+```{r}
+plot_roc <- function(whole_bunch_of_models) {
+  # This is a function that plot ROC curve and return ROC curve when needed.
+  # It uses all models in 'whole_bunch_of_models'
+  plot(NA, xlim = c(0, 1), ylim = c(0, 1), 
+       xlab = "False Positive Rate", ylab = "True Positive Rate",
+       main = "ROC Curves Comparison")
+  
+  
+  abline(0, 1, col = "grey")
+  
+  
+  for (model in whole_bunch_of_models) {
+    plot(model$perf, col = model$colour, add = TRUE)
+  }
+  
+  
+  legend("bottomright",
+         legend = paste0(sapply(whole_bunch_of_models, function(model) model$name), 
+                        " (AUC = ", 
+                        sapply(whole_bunch_of_models, function(model) round(model$auc, 3)), ")"),
+         fill = sapply(whole_bunch_of_models, function(model) model$colour), 
+         cex = 0.8)
+}
+```
+
+```{r}
+compare_metrices <- function (whole_bunch_of_models){
+  # This is a function that return a dataframe that compare all models in 'whole_bunch_of_models'
+  # It gives all necessary information needed. 
+    metrices_list <- list()
+  
+  for (models in whole_bunch_of_models) {
+    metrices_list[[models$name]] <- data.frame(
+      Accuracy = models$Accuracy,
+      Precision = models$Precision,
+      Recall = models$Recall,
+      F1_Score = models$F1_Score
+    )
+  }
+  
+  metrices_compare <- do.call(rbind, metrices_list)
+  metrices_compare <- (metrices_compare  
+                       %>% round(2) 
+                       %>% replace_na(replace = list(Accuracy = 0, Precision = 0, Recall = 0, F1_Score = 0))%>% t() %>% as.data.frame())
+  return (
+    metrices_compare
+  )
+}
+```
+
+```{r}
+confusion_matrices <- function(whole_bunch_of_models) {
+  ### This is a function that return all confusion matrices of all models when required based on models in 'whole_bunch_of_models'
+  for (models in whole_bunch_of_models) {
+    cat("\n")
+    cat("=======================\n")
+    cat("Confusion Matrix of", models$name, "\n")
+    cat("=======================\n")
+    print(models$Confusion_Matrix)
+    cat("\n")
+  }
+}
+```
+
+```{r}
+confusion_matrices(whole_bunch_of_models)
+```
+
+```{r}
+library(tidyr)
+
+compare_metrices(whole_bunch_of_models)
+```
+
+```{r}
+plot_roc(whole_bunch_of_models)
+```
+
+**Q9-10**
+
+```{r}
+# Use Random Forest since its AUC is largest
+importance(rf_model)
+varImpPlot(rf_model)
+```
+
+```{r}
+# Boosting model is also referred
+importanceplot(boost_model)
+```
+
+```{r}
+# This is quite obviously, sorting the model importance in decreasing order
+sorted_importance <- sort(importance(rf_model)[, "MeanDecreaseGini"], decreasing = TRUE)
+sorted_importance
+```
+
+```{r}
+# Take top first and top thrid due to the same reason mentioned in the report
+top_n <- 3
+important_features <- names(sorted_importance)[1:top_n]
+thresholds <- sapply(important_features, function(f) {
+  median(WD[[f]][WD$Class == 1], na.rm = TRUE) %>% round(1)
+})
+
+```
+
+```{r}
+hand_model <- function(features, thresholds) {
+  list(features = features, thresholds = thresholds)
+}
+# simplified prediction function
+predict.hand_model <- function(model, newdata) {
+  f1 <- model$features[1]
+  f2 <- model$features[3]
+  t1 <- model$thresholds[1]
+  t2 <- model$thresholds[3]
+  
+  # here are the decision rule based on defined rules mentioned in report
+  # pred_class and prob are to make sure that they could be compatible in the 'whole_bunch_of_models' list.
+  pred_class <- ifelse(newdata[[f1]] > t1 | newdata[[f2]] < t2, 1, 0)
+  prob <- ifelse(pred_class == 1, 0.99, 0.01)  # Simple confidence values
+  
+  list(class = factor(pred_class, levels = c(0, 1)),
+       prob = data.frame(`0` = 1 - prob, `1` = prob))
+}
+
+# evaluate model
+manual_model <- hand_model(important_features, thresholds)
+preds <- predict.hand_model(manual_model, data.test)
+
+model_entry(model = manual_model,
+            pred = preds$class,
+            prob = preds$prob,
+            name = "Simple Rules")
+```
+
+```{r}
+# Here is the rules
+cat("Manual Prediction Rules:\n",
+    "1. IF", important_features[1], ">", thresholds[[1]], "THEN predict 'Oats' (Class = 1)\n",
+    "2. ELSE IF", important_features[3], "<", thresholds[[3]], "THEN predict 'Oats' (Class = 1)\n",
+    "3. OTHERWISE predict 'Other' (Class = 0)\n")
+
+```
+
+```{r}
+confusion_matrices(whole_bunch_of_models)
+```
+
+```{r}
+compare_metrices(whole_bunch_of_models)
+```
+
+```{r}
+plot_roc(whole_bunch_of_models)
+```
+
+**Q11**
+
+```{r}
+# 1. Normalise
+WD_scaled <- scale(WD[,1:length(names(WD))-1]) %>% as.data.frame()
+WD_scaled$Class <- as.factor(WD$Class)
+head(WD_scaled)
+```
+
+```{r}
+library(smotefamily)
+smote_result <- SMOTE(
+  X = WD_scaled %>% select(-Class),
+  target = WD_scaled$Class,
+  dup_size = 0)
+
+WD_balanced <- smote_result$data
+
+# Here idk why they renamed "Class" to "class" 
+# therefore here is whete im renaming it back
+WD_balanced <- WD_balanced %>% rename(Class = class)
+WD_balanced$Class <- as.factor(WD_balanced$Class)
+```
+
+```{r}
+cat("Ori class distribution:\n")
+print(table(WD$Class))
+
+cat("\nBalanced class distribution:\n")
+print(table(WD_balanced$Class))
+```
+
+```{r}
+# 2. Again train-test split
+# But there exist imbalance of data between Class 0 and Class 1, therefore we are taking stratified samples...
+library(caret)
+
+set.seed(student_id) 
+train.rows <- sample(1:nrow(WD_balanced), 0.7*nrow(WD_balanced)) 
+data.train <- WD_balanced[train.rows, ]
+data.test <- WD_balanced[-train.rows, ]
+```
+
+```{r}
+train_control <- trainControl(method = "cv", 
+                              number = 10)
+
+```
+
+```{r}
+# 3. AND THEN, do grid-search for yperparameyer tuning
+# Since we dk the best number of features per split (mtry)
+# and the best node size of the random forest
+# we would do the following tuning on
+# mtry : 2 to number of features/3 + 1
+# nodesize : 2 to 8
+
+mtry_grid <- 2: ceiling(ncol(data.train)/3) + 1
+nodesize_grid <- 2: 5
+
+results <- list()
+
+for (i in seq_along(mtry_grid)) {
+  for (j in seq_along(nodesize_grid)) {
+    mtry = mtry_grid[i]
+    nodesize = nodesize_grid[j]
+      
+    model <- randomForest(
+      Class ~ .,
+      data = data.train,
+      trControl = train_control,
+      mtry = mtry,
+      nodesize = nodesize,
+      ntree = 500  # Fixed ntree,
+      
+    )
+    
+    
+    pred <- predict(model, data.test)
+    
+    
+    Confusion_Matrix <- table(Predicted = pred, Actual = data.test$Class)
+    Accuracy <- sum(diag(Confusion_Matrix)) / sum(Confusion_Matrix)
+    
+    
+    results[[length(results)+1]] <- data.frame(
+      mtry = mtry,
+      nodesize = nodesize,
+      Accuracy = round(Accuracy, 3)
+    )
+  }
+}
+
+
+results_df <- do.call(rbind, results) %>% arrange(desc(Accuracy))
+
+```
+
+```{r}
+head(results_df,5)
+```
+
+```{r}
+best_params <- results_df[1,]
+print("Best mtry paraneter")
+best_params$mtry[1]
+print("Best nodesize parameter")
+best_params$nodesize
+```
+
+```{r}
+optimised_model <- randomForest(
+      Class ~ .,
+      data = data.train,
+      mtry = best_params$mtry[1],
+      nodesize = best_params$nodesize[1],
+      trControl = train_control,
+      ntree = 500
+    )
+
+```
+
+```{r}
+optimised_model
+```
+
+```{r}
+model_entry(optimised_model, 
+       pred = predict(optimised_model, data.test),
+       prob = predict(optimised_model, data.test, type = "prob"),
+       name = "Optimised Random Forest")
+```
+
+```{r}
+compare_metrices(whole_bunch_of_models)
+```
+
+```{r}
+plot_roc(whole_bunch_of_models)
+```
+
+```{r}
+optimised_model
+```
+
+**Q12**
+
+```{r}
+# According to the current insights
+# it is proven that SMOTE resampling is necessary.
+# therefore, the the ANN will be based on the balanced_data
+
+nn_model <- neuralnet(Class ~., 
+                      data = data.train,
+                      hidden = 1)
+
+nn_compute <- compute(nn_model,data.test[,1:length(data.test)-1])
+
+nn_pred <- round(nn_compute$net.result, 0)[,2]
+
+nn_prob <- nn_compute$net.result
+```
+
+```{r}
+model_entry(
+  nn_model,
+  pred = nn_pred,
+  prob = nn_prob,
+  name = "ANN"
+)
+```
+
+```{r}
+compare_metrices(whole_bunch_of_models)
+```
+
+```{r}
+plot_roc(whole_bunch_of_models)
+```
+
+**Q13**
+
+```{r}
+# Based on https://lightgbm.readthedocs.io/en/latest/R/index.html
+train_data <- as.matrix(data.train[, -which(names(data.train) == "Class")])
+test_data <- as.matrix(data.test[, -which(names(data.test) == "Class")])
+
+# Create LightGBM dataset objects
+dtrain <- lgb.Dataset(data = train_data, label = as.numeric(data.train$Class)-1)
+dtest <- lgb.Dataset.create.valid(dtrain, data = test_data, label = as.numeric(data.test$Class)-1)
+```
+
+```{r}
+lgb_model_baseline <- lgb.train(
+  data = dtrain,
+  nrounds = 250
+)
+```
+
+```{r}
+preds = predict(lgb_model_baseline, test_data)
+model_entry(
+  lgb_model_baseline,
+  pred = round(preds, 0),
+  prob = data.frame('0' = 1-preds, '1' = preds),
+  name = "Baseline LightGBM model"
+)
+```
+
+```{r}
+#Similar to optimised_random forest, we will be doing hyperparameter tuning for this model too.
+# and cv
+# The most important predictors of this model are:
+# learning rate and number of leaves
+# Therefore the hyperparameter tuning will be conducted by:
+# num_leaves : 5 random values between 10 to 100
+# learning rate: among 0.01, 0.05 and 0.1 --- which are the most common rates used
+
+# while for CV, still, 10-fold will be conducted
+
+grid_num_leaves =  seq(8, 35, by = 5)
+grid_learning_rate = c(0.01, 0.05, 0.1)
+
+results <- list()
+
+for (i in seq_along(grid_num_leaves)) {
+  for (j in seq_along(grid_learning_rate)) {
+    num_leaves = grid_num_leaves[i]
+    learning_rate = grid_learning_rate[j]
+      
+    cv_model <- lgb.cv(
+      
+      data = dtrain,
+      nrounds = 250,
+      nfold = 10,
+      params = list(
+        objective = "binary",
+        num_leaves = num_leaves,
+        learning_rate = learning_rate
+      ),
+      verbose = -1 # so that it dont spam words
+      
+    )
+    
+    best_nrounds <- cv_model$best_iter
+    
+    model <- lgb.train(
+      params = list(
+        num_leaves = num_leaves,
+        learning_rate = learning_rate
+      ),
+      data = dtrain,
+      nrounds = best_nrounds,
+      verbose = -1 # so that it dont spam words
+    )    
+    
+    
+    pred <- round(predict(model, test_data), 0)
+    
+    
+    Confusion_Matrix <- table(Predicted = pred, Actual = data.test$Class)
+    Accuracy <- sum(diag(Confusion_Matrix)) / sum(Confusion_Matrix)
+    
+    
+    results[[length(results)+1]] <- data.frame(
+      num_leaves = num_leaves,
+      learning_rate = learning_rate,
+      nrounds = best_nrounds,
+      Accuracy = round(Accuracy, 3)
+    )
+  }
+}
+
+
+results_df <- do.call(rbind, results) %>% arrange(desc(Accuracy))
+best_params <- results_df[1,]
+```
+
+```{r}
+head(results_df,5)
+```
+
+```{r}
+lgb_model <- lgb.train(
+      params = list(
+        num_leaves = best_params$num_leaves,
+        learning_rate = best_params$learning_rate
+      ),
+      data = dtrain,
+      nrounds = best_params$nrounds,
+      verbose = -1 # so that it dont spam words
+    )
+```
+
+```{r}
+preds = predict(lgb_model, test_data)
+model_entry(
+  lgb_model,
+  pred = round(preds, 0),
+  prob = data.frame('0' = 1-preds, '1' = preds),
+  name = "Optimised LightGBM model"
+)
+```
+
+```{r}
+compare_metrices(whole_bunch_of_models)
+```
+
+```{r}
+plot_roc(whole_bunch_of_models)
+```
